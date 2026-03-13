@@ -3,8 +3,11 @@ from discord import app_commands
 from discord.ui import Button, View
 import json
 import os
+import asyncio
+import time
 from datetime import datetime
 from dotenv import load_dotenv
+from server import keep_alive
 
 # ─────────────────────────────────────────
 #  LOAD ENVIRONMENT VARIABLES
@@ -25,17 +28,14 @@ STATE_CONFIG = {
     "online": {
         "label": "🟢 Frostbot — Online",
         "color": discord.Color.green(),
-        "button_style": discord.ButtonStyle.success,
     },
     "updating": {
         "label": "🟡 Frostbot — Updating",
         "color": discord.Color.yellow(),
-        "button_style": discord.ButtonStyle.secondary,
     },
     "offline": {
         "label": "🔴 Frostbot — Offline",
         "color": discord.Color.red(),
-        "button_style": discord.ButtonStyle.danger,
     },
 }
 
@@ -62,7 +62,7 @@ def build_embed(state: str) -> discord.Embed:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     embed = discord.Embed(
-        title="📊 Frostbot Status",
+        title="📡 Frostbot Status",
         description="Official status panel for Frostbot.\n━━━━━━━━━━━━━━━━━━━━",
         color=cfg["color"],
     )
@@ -118,7 +118,6 @@ async def set_status(
     message_id = data.get("message_id")
     message    = None
 
-    # Try to fetch the existing message
     if message_id:
         try:
             message = await channel.fetch_message(message_id)
@@ -163,7 +162,7 @@ async def status_command(interaction: discord.Interaction, state: app_commands.C
     channel = client.get_channel(CHANNEL_ID)
     if channel is None:
         await interaction.response.send_message(
-            "Status channel not found. Check CHANNEL_ID in .env.", ephemeral=True
+            "Status channel not found. Check CHANNEL_ID.", ephemeral=True
         )
         return
 
@@ -172,14 +171,10 @@ async def status_command(interaction: discord.Interaction, state: app_commands.C
 
 @client.event
 async def on_ready():
-    # Register persistent view so buttons keep working after restart
     client.add_view(StatusView())
-
-    # Sync slash commands globally
     await tree.sync()
     print("Bot is ready.")
 
-    # Reload and refresh the status message on startup
     data    = load_status()
     channel = client.get_channel(CHANNEL_ID)
     if channel:
@@ -187,6 +182,22 @@ async def on_ready():
 
 
 # ─────────────────────────────────────────
-#  RUN
+#  RUN WITH RETRY LOOP
 # ─────────────────────────────────────────
-client.run(TOKEN)
+keep_alive()
+
+MAX_RETRIES = 10
+RETRY_DELAY = 10  # seconds between each retry
+
+for attempt in range(1, MAX_RETRIES + 1):
+    try:
+        print(f"Connecting to Discord... (attempt {attempt}/{MAX_RETRIES})")
+        client.run(TOKEN)
+        break  # If run() exits cleanly, stop retrying
+    except Exception as e:
+        print(f"Connection failed: {e}")
+        if attempt < MAX_RETRIES:
+            print(f"Retrying in {RETRY_DELAY} seconds...")
+            time.sleep(RETRY_DELAY)
+        else:
+            print("Max retries reached. Exiting.")
