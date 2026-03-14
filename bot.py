@@ -201,12 +201,16 @@ def create_bot():
 
 
 # ─────────────────────────────────────────
-#  RUN WITH EXPONENTIAL BACKOFF RETRY
+#  RUN
 # ─────────────────────────────────────────
 keep_alive()
 
+# Wait before first connection to avoid Cloudflare rate limit on Render's shared IPs
+print("Waiting 20 seconds before connecting to Discord...")
+time.sleep(20)
+
 MAX_RETRIES = 5
-BASE_DELAY  = 30  # seconds — long enough to avoid Cloudflare rate limit
+RETRY_DELAY = 60  # wait 60 seconds between retries
 
 for attempt in range(1, MAX_RETRIES + 1):
     try:
@@ -217,8 +221,7 @@ for attempt in range(1, MAX_RETRIES + 1):
     except Exception as e:
         print(f"[ERROR] Connection failed: {e}")
         if attempt < MAX_RETRIES:
-            delay = BASE_DELAY * attempt  # 30s, 60s, 90s, 120s
-            print(f"Retrying in {delay} seconds...")
-            time.sleep(delay)
+            print(f"Retrying in {RETRY_DELAY} seconds...")
+            time.sleep(RETRY_DELAY)
         else:
             print("Max retries reached. Exiting.")
