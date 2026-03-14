@@ -75,52 +75,6 @@ def build_embed(state: str) -> discord.Embed:
 
 
 # ─────────────────────────────────────────
-#  BUTTONS VIEW
-# ─────────────────────────────────────────
-class StatusView(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    async def _handle_button(self, interaction: discord.Interaction, state: str):
-        try:
-            if interaction.user.id != OWNER_ID:
-                await interaction.response.send_message(
-                    "You do not have permission to use this.", ephemeral=True
-                )
-                return
-
-            # Defer immediately to avoid the 3-second timeout
-            await interaction.response.defer(ephemeral=True)
-
-            # Always fetch channel by ID — never rely on interaction.channel
-            channel = interaction.client.get_channel(CHANNEL_ID)
-            if channel is None:
-                channel = await interaction.client.fetch_channel(CHANNEL_ID)
-
-            await set_status(channel, state)
-            await interaction.followup.send(f"Status updated to **{state}**.", ephemeral=True)
-
-        except Exception as e:
-            print(f"Button error: {e}")
-            try:
-                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
-            except Exception:
-                pass
-
-    @discord.ui.button(label="🟢 Set Online", style=discord.ButtonStyle.success, custom_id="btn_online")
-    async def btn_online(self, interaction: discord.Interaction, button: Button):
-        await self._handle_button(interaction, "online")
-
-    @discord.ui.button(label="🟡 Set Updating", style=discord.ButtonStyle.secondary, custom_id="btn_updating")
-    async def btn_updating(self, interaction: discord.Interaction, button: Button):
-        await self._handle_button(interaction, "updating")
-
-    @discord.ui.button(label="🔴 Set Offline", style=discord.ButtonStyle.danger, custom_id="btn_offline")
-    async def btn_offline(self, interaction: discord.Interaction, button: Button):
-        await self._handle_button(interaction, "offline")
-
-
-# ─────────────────────────────────────────
 #  CORE STATUS SETTER
 # ─────────────────────────────────────────
 async def set_status(channel: discord.TextChannel, state: str) -> None:
@@ -146,7 +100,51 @@ async def set_status(channel: discord.TextChannel, state: str) -> None:
 
 
 # ─────────────────────────────────────────
-#  BOT FACTORY — creates a fresh client each run
+#  BUTTONS VIEW
+# ─────────────────────────────────────────
+class StatusView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def _handle_button(self, interaction: discord.Interaction, state: str):
+        try:
+            if interaction.user.id != OWNER_ID:
+                await interaction.response.send_message(
+                    "You do not have permission to use this.", ephemeral=True
+                )
+                return
+
+            await interaction.response.defer(ephemeral=True)
+
+            channel = interaction.client.get_channel(CHANNEL_ID)
+            if channel is None:
+                channel = await interaction.client.fetch_channel(CHANNEL_ID)
+
+            await set_status(channel, state)
+            await interaction.followup.send(f"Status updated to **{state}**.", ephemeral=True)
+
+        except Exception as e:
+            print(f"[ERROR] Button error: {e}")
+            try:
+                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
+            except Exception:
+                pass
+
+    @discord.ui.button(label="🟢 Set Online", style=discord.ButtonStyle.success, custom_id="btn_online")
+    async def btn_online(self, interaction: discord.Interaction, button: Button):
+        await self._handle_button(interaction, "online")
+
+    @discord.ui.button(label="🟡 Set Updating", style=discord.ButtonStyle.secondary, custom_id="btn_updating")
+    async def btn_updating(self, interaction: discord.Interaction, button: Button):
+        await self._handle_button(interaction, "updating")
+
+    @discord.ui.button(label="🔴 Set Offline", style=discord.ButtonStyle.danger, custom_id="btn_offline")
+    async def btn_offline(self, interaction: discord.Interaction, button: Button):
+        await self._handle_button(interaction, "offline")
+
+
+# ─────────────────────────────────────────
+#  BOT FACTORY
 # ─────────────────────────────────────────
 def create_bot():
     intents = discord.Intents.default()
@@ -178,9 +176,9 @@ def create_bot():
             await interaction.followup.send(f"Status updated to **{state.value}**.", ephemeral=True)
 
         except Exception as e:
-            print(f"Command error: {e}")
+            print(f"[ERROR] Command error: {e}")
             try:
-                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
+                await interaction.followup.send("An error occurred.", ephemeral=True)
             except Exception:
                 pass
 
@@ -188,35 +186,39 @@ def create_bot():
     async def on_ready():
         client.add_view(StatusView())
         await tree.sync()
-        print("Bot is ready.")
+        print(f"✅ Bot is ready. Logged in as {client.user}")
 
-        data    = load_status()
-        channel = client.get_channel(CHANNEL_ID)
-        if channel is None:
-            channel = await client.fetch_channel(CHANNEL_ID)
-        await set_status(channel, data.get("state", "offline"))
+        data = load_status()
+        try:
+            channel = client.get_channel(CHANNEL_ID)
+            if channel is None:
+                channel = await client.fetch_channel(CHANNEL_ID)
+            await set_status(channel, data.get("state", "offline"))
+        except Exception as e:
+            print(f"[ERROR] on_ready set_status failed: {e}")
 
     return client
 
 
 # ─────────────────────────────────────────
-#  RUN WITH RETRY — fresh client each attempt
+#  RUN WITH EXPONENTIAL BACKOFF RETRY
 # ─────────────────────────────────────────
 keep_alive()
 
-MAX_RETRIES = 10
-RETRY_DELAY = 10
+MAX_RETRIES = 5
+BASE_DELAY  = 30  # seconds — long enough to avoid Cloudflare rate limit
 
 for attempt in range(1, MAX_RETRIES + 1):
     try:
         print(f"Connecting to Discord... (attempt {attempt}/{MAX_RETRIES})")
-        bot = create_bot()   # fresh client every time
-        bot.run(TOKEN)
+        bot = create_bot()
+        bot.run(TOKEN, reconnect=True)
         break
     except Exception as e:
-        print(f"Connection failed: {e}")
+        print(f"[ERROR] Connection failed: {e}")
         if attempt < MAX_RETRIES:
-            print(f"Retrying in {RETRY_DELAY} seconds...")
-            time.sleep(RETRY_DELAY)
+            delay = BASE_DELAY * attempt  # 30s, 60s, 90s, 120s
+            print(f"Retrying in {delay} seconds...")
+            time.sleep(delay)
         else:
             print("Max retries reached. Exiting.")
