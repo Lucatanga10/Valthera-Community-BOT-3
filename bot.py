@@ -3,7 +3,6 @@ from discord import app_commands
 from discord.ui import Button, View
 import json
 import os
-import asyncio
 import time
 from datetime import datetime
 from dotenv import load_dotenv
@@ -83,12 +82,30 @@ class StatusView(View):
         super().__init__(timeout=None)
 
     async def _handle_button(self, interaction: discord.Interaction, state: str):
-        if interaction.user.id != OWNER_ID:
-            await interaction.response.send_message(
-                "You do not have permission to use this.", ephemeral=True
-            )
-            return
-        await set_status(interaction.channel, state, respond=interaction)
+        try:
+            if interaction.user.id != OWNER_ID:
+                await interaction.response.send_message(
+                    "You do not have permission to use this.", ephemeral=True
+                )
+                return
+
+            # Defer immediately to avoid the 3-second timeout
+            await interaction.response.defer(ephemeral=True)
+
+            # Always fetch channel by ID — never rely on interaction.channel
+            channel = interaction.client.get_channel(CHANNEL_ID)
+            if channel is None:
+                channel = await interaction.client.fetch_channel(CHANNEL_ID)
+
+            await set_status(channel, state)
+            await interaction.followup.send(f"Status updated to **{state}**.", ephemeral=True)
+
+        except Exception as e:
+            print(f"Button error: {e}")
+            try:
+                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
+            except Exception:
+                pass
 
     @discord.ui.button(label="🟢 Set Online", style=discord.ButtonStyle.success, custom_id="btn_online")
     async def btn_online(self, interaction: discord.Interaction, button: Button):
@@ -106,11 +123,7 @@ class StatusView(View):
 # ─────────────────────────────────────────
 #  CORE STATUS SETTER
 # ─────────────────────────────────────────
-async def set_status(
-    channel: discord.TextChannel,
-    state: str,
-    respond: discord.Interaction | None = None,
-) -> None:
+async def set_status(channel: discord.TextChannel, state: str) -> None:
     data = load_status()
     embed = build_embed(state)
     view  = StatusView()
@@ -131,69 +144,75 @@ async def set_status(
 
     save_status(state, message.id)
 
-    if respond:
-        await respond.response.send_message(
-            f"Status updated to **{state}**.", ephemeral=True
-        )
-
 
 # ─────────────────────────────────────────
-#  BOT SETUP
+#  BOT FACTORY — creates a fresh client each run
 # ─────────────────────────────────────────
-intents = discord.Intents.default()
-client  = discord.Client(intents=intents)
-tree    = app_commands.CommandTree(client)
+def create_bot():
+    intents = discord.Intents.default()
+    client  = discord.Client(intents=intents)
+    tree    = app_commands.CommandTree(client)
 
+    @tree.command(name="status", description="Update the Frostbot status panel.")
+    @app_commands.describe(state="Choose the new status for Frostbot.")
+    @app_commands.choices(state=[
+        app_commands.Choice(name="online",   value="online"),
+        app_commands.Choice(name="updating", value="updating"),
+        app_commands.Choice(name="offline",  value="offline"),
+    ])
+    async def status_command(interaction: discord.Interaction, state: app_commands.Choice[str]):
+        try:
+            if interaction.user.id != OWNER_ID:
+                await interaction.response.send_message(
+                    "You do not have permission to use this.", ephemeral=True
+                )
+                return
 
-@tree.command(name="status", description="Update the Frostbot status panel.")
-@app_commands.describe(state="Choose the new status for Frostbot.")
-@app_commands.choices(state=[
-    app_commands.Choice(name="online",   value="online"),
-    app_commands.Choice(name="updating", value="updating"),
-    app_commands.Choice(name="offline",  value="offline"),
-])
-async def status_command(interaction: discord.Interaction, state: app_commands.Choice[str]):
-    if interaction.user.id != OWNER_ID:
-        await interaction.response.send_message(
-            "You do not have permission to use this.", ephemeral=True
-        )
-        return
+            await interaction.response.defer(ephemeral=True)
 
-    channel = client.get_channel(CHANNEL_ID)
-    if channel is None:
-        await interaction.response.send_message(
-            "Status channel not found. Check CHANNEL_ID.", ephemeral=True
-        )
-        return
+            channel = client.get_channel(CHANNEL_ID)
+            if channel is None:
+                channel = await client.fetch_channel(CHANNEL_ID)
 
-    await set_status(channel, state.value, respond=interaction)
+            await set_status(channel, state.value)
+            await interaction.followup.send(f"Status updated to **{state.value}**.", ephemeral=True)
 
+        except Exception as e:
+            print(f"Command error: {e}")
+            try:
+                await interaction.followup.send("An error occurred. Please try again.", ephemeral=True)
+            except Exception:
+                pass
 
-@client.event
-async def on_ready():
-    client.add_view(StatusView())
-    await tree.sync()
-    print("Bot is ready.")
+    @client.event
+    async def on_ready():
+        client.add_view(StatusView())
+        await tree.sync()
+        print("Bot is ready.")
 
-    data    = load_status()
-    channel = client.get_channel(CHANNEL_ID)
-    if channel:
+        data    = load_status()
+        channel = client.get_channel(CHANNEL_ID)
+        if channel is None:
+            channel = await client.fetch_channel(CHANNEL_ID)
         await set_status(channel, data.get("state", "offline"))
 
+    return client
+
 
 # ─────────────────────────────────────────
-#  RUN WITH RETRY LOOP
+#  RUN WITH RETRY — fresh client each attempt
 # ─────────────────────────────────────────
 keep_alive()
 
 MAX_RETRIES = 10
-RETRY_DELAY = 10  # seconds between each retry
+RETRY_DELAY = 10
 
 for attempt in range(1, MAX_RETRIES + 1):
     try:
         print(f"Connecting to Discord... (attempt {attempt}/{MAX_RETRIES})")
-        client.run(TOKEN)
-        break  # If run() exits cleanly, stop retrying
+        bot = create_bot()   # fresh client every time
+        bot.run(TOKEN)
+        break
     except Exception as e:
         print(f"Connection failed: {e}")
         if attempt < MAX_RETRIES:
