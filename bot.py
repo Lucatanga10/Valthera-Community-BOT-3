@@ -144,84 +144,70 @@ class StatusView(View):
 
 
 # ─────────────────────────────────────────
-#  BOT FACTORY
+#  BOT SETUP
 # ─────────────────────────────────────────
-def create_bot():
-    intents = discord.Intents.default()
-    client  = discord.Client(intents=intents)
-    tree    = app_commands.CommandTree(client)
+intents = discord.Intents.default()
+client  = discord.Client(intents=intents)
+tree    = app_commands.CommandTree(client)
 
-    @tree.command(name="status", description="Update the Frostbot status panel.")
-    @app_commands.describe(state="Choose the new status for Frostbot.")
-    @app_commands.choices(state=[
-        app_commands.Choice(name="online",   value="online"),
-        app_commands.Choice(name="updating", value="updating"),
-        app_commands.Choice(name="offline",  value="offline"),
-    ])
-    async def status_command(interaction: discord.Interaction, state: app_commands.Choice[str]):
+
+@tree.command(name="status", description="Update the Frostbot status panel.")
+@app_commands.describe(state="Choose the new status for Frostbot.")
+@app_commands.choices(state=[
+    app_commands.Choice(name="online",   value="online"),
+    app_commands.Choice(name="updating", value="updating"),
+    app_commands.Choice(name="offline",  value="offline"),
+])
+async def status_command(interaction: discord.Interaction, state: app_commands.Choice[str]):
+    try:
+        if interaction.user.id != OWNER_ID:
+            await interaction.response.send_message(
+                "You do not have permission to use this.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        channel = client.get_channel(CHANNEL_ID)
+        if channel is None:
+            channel = await client.fetch_channel(CHANNEL_ID)
+
+        await set_status(channel, state.value)
+        await interaction.followup.send(f"Status updated to **{state.value}**.", ephemeral=True)
+
+    except Exception as e:
+        print(f"[ERROR] Command error: {e}")
         try:
-            if interaction.user.id != OWNER_ID:
-                await interaction.response.send_message(
-                    "You do not have permission to use this.", ephemeral=True
-                )
-                return
+            await interaction.followup.send("An error occurred.", ephemeral=True)
+        except Exception:
+            pass
 
-            await interaction.response.defer(ephemeral=True)
 
-            channel = client.get_channel(CHANNEL_ID)
-            if channel is None:
-                channel = await client.fetch_channel(CHANNEL_ID)
+@client.event
+async def on_ready():
+    client.add_view(StatusView())
+    await tree.sync()
+    print(f"✅ Bot is ready. Logged in as {client.user}")
 
-            await set_status(channel, state.value)
-            await interaction.followup.send(f"Status updated to **{state.value}**.", ephemeral=True)
-
-        except Exception as e:
-            print(f"[ERROR] Command error: {e}")
-            try:
-                await interaction.followup.send("An error occurred.", ephemeral=True)
-            except Exception:
-                pass
-
-    @client.event
-    async def on_ready():
-        client.add_view(StatusView())
-        await tree.sync()
-        print(f"✅ Bot is ready. Logged in as {client.user}")
-
-        data = load_status()
-        try:
-            channel = client.get_channel(CHANNEL_ID)
-            if channel is None:
-                channel = await client.fetch_channel(CHANNEL_ID)
-            await set_status(channel, data.get("state", "offline"))
-        except Exception as e:
-            print(f"[ERROR] on_ready set_status failed: {e}")
-
-    return client
+    data = load_status()
+    try:
+        channel = client.get_channel(CHANNEL_ID)
+        if channel is None:
+            channel = await client.fetch_channel(CHANNEL_ID)
+        await set_status(channel, data.get("state", "offline"))
+    except Exception as e:
+        print(f"[ERROR] on_ready failed: {e}")
 
 
 # ─────────────────────────────────────────
-#  RUN
+#  RUN — let discord.py handle reconnects
 # ─────────────────────────────────────────
 keep_alive()
 
-# Wait before first connection to avoid Cloudflare rate limit on Render's shared IPs
-print("Waiting 20 seconds before connecting to Discord...")
-time.sleep(20)
+# Wait 60s on startup to let Render's network fully initialize
+# and avoid Cloudflare rate limiting on shared IPs
+print("Waiting 60 seconds before connecting...")
+time.sleep(60)
 
-MAX_RETRIES = 5
-RETRY_DELAY = 60  # wait 60 seconds between retries
-
-for attempt in range(1, MAX_RETRIES + 1):
-    try:
-        print(f"Connecting to Discord... (attempt {attempt}/{MAX_RETRIES})")
-        bot = create_bot()
-        bot.run(TOKEN, reconnect=True)
-        break
-    except Exception as e:
-        print(f"[ERROR] Connection failed: {e}")
-        if attempt < MAX_RETRIES:
-            print(f"Retrying in {RETRY_DELAY} seconds...")
-            time.sleep(RETRY_DELAY)
-        else:
-            print("Max retries reached. Exiting.")
+print("Connecting to Discord...")
+client.run(TOKEN, reconnect=True)
